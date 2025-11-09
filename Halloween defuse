@@ -1,0 +1,475 @@
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService") 
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+local HEAD_SIZE = Vector3.new(5, 5, 5)
+local HEAD_COLOR = Color3.fromRGB(255, 100, 100) 
+local HEAD_TRANSPARENCY = 0.5            
+
+local TORSO_SIZE = Vector3.new(4, 5, 2)
+local TORSO_COLOR = Color3.fromRGB(100, 100, 255) 
+local TORSO_TRANSPARENCY = 0.4           
+
+local HitboxTargetPart = "Head" 
+local KeybindCooldown = 0.5 
+local LastToggleTime = 0 
+
+local ESPColorVisible = Color3.fromRGB(100, 255, 150) 
+local ESPColorHidden = Color3.fromRGB(255, 80, 80)    
+
+local ESPCache = {} 
+local ESPFolder = nil
+local ModifiedPartsCache = {} 
+local ESPUPDATEINTERVAL = 0.1
+
+local function getRootPart(character)
+    if not character then return nil end
+    return character:FindFirstChild("HumanoidRootPart")
+end
+
+local function getHumanoid(character)
+    if not character then return nil end
+    return character:FindFirstChildOfClass("Humanoid")
+end
+
+local function showNotification(text)
+    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+    if playerGui:FindFirstChild("HitboxNotificationGui") then 
+        playerGui:FindFirstChild("HitboxNotificationGui"):Destroy() 
+    end
+    
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "HitboxNotificationGui"
+    screenGui.Parent = playerGui
+    screenGui.DisplayOrder = 100 
+    screenGui.ResetOnSpawn = false
+    
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0.3, 0, 0, 40) 
+    frame.Position = UDim2.new(0, 10, 0, 50) 
+    frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30) 
+    frame.BackgroundTransparency = 0.5 
+    frame.BorderSizePixel = 0
+    frame.Parent = screenGui
+
+    local textLabel = Instance.new("TextLabel")
+    textLabel.Size = UDim2.new(1, 0, 1, 0)
+    textLabel.BackgroundTransparency = 1
+    textLabel.Text = text
+    textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    textLabel.Font = Enum.Font.SourceSansBold
+    textLabel.TextSize = 16
+    textLabel.Parent = frame
+    
+    game:GetService("Debris"):AddItem(screenGui, 2.5)
+end
+
+local function getPartsToModify(character, mode)
+    if mode == "Head" then
+        return {character:FindFirstChild("Head")}
+    elseif mode == "Torso" then
+        return {character:FindFirstChild("UpperTorso"), character:FindFirstChild("LowerTorso")}
+    end
+    return {}
+end
+
+local function applyHitboxModifications(player, mode)
+    if player == LocalPlayer then return end
+    
+    local character = player.Character
+    if not character then return end
+    
+    if ModifiedPartsCache[player] then
+        for _, part in ipairs(ModifiedPartsCache[player]) do
+            local tag = part:FindFirstChild("UniversalHitbox")
+            if tag then
+                part.Size = part.Name == "Head" and Vector3.new(2, 1, 1) or Vector3.new(2, 2, 1)
+                part.BrickColor = BrickColor.new("Bright yellow") 
+                part.Transparency = 0
+                part.Material = Enum.Material.Plastic
+                part.CanCollide = true
+                tag:Destroy()
+            end
+        end
+        ModifiedPartsCache[player] = nil
+    end
+
+    local partsToModify = getPartsToModify(character, mode)
+    ModifiedPartsCache[player] = {}
+
+    for _, part in ipairs(partsToModify) do
+        if part and part:IsA("BasePart") then
+            
+            local size, color, transparency
+            if mode == "Head" then
+                size = HEAD_SIZE
+                color = HEAD_COLOR
+                transparency = HEAD_TRANSPARENCY
+            elseif mode == "Torso" then
+                size = TORSO_SIZE
+                color = TORSO_COLOR
+                transparency = TORSO_TRANSPARENCY
+            end
+            
+            part.Size = size
+            part.BrickColor = BrickColor.new(color)
+            part.Transparency = transparency
+            part.Material = Enum.Material.Neon 
+            part.CanCollide = true
+            
+            local tag = Instance.new("StringValue")
+            tag.Name = "UniversalHitbox"
+            tag.Value = mode 
+            tag.Parent = part
+            
+            table.insert(ModifiedPartsCache[player], part)
+        end
+    end
+end
+
+local function restorePlayerParts(player)
+    if ModifiedPartsCache[player] then
+        for _, part in ipairs(ModifiedPartsCache[player]) do
+            if part and part.Parent then
+                part.Size = part.Name == "Head" and Vector3.new(2, 1, 1) or Vector3.new(2, 2, 1)
+                part.BrickColor = BrickColor.new("Bright yellow") 
+                part.Transparency = 0
+                part.Material = Enum.Material.Plastic
+                part.CanCollide = true
+                
+                local tag = part:FindFirstChild("UniversalHitbox")
+                if tag then
+                    tag:Destroy()
+                end
+            end
+        end
+        ModifiedPartsCache[player] = nil
+    end
+end
+
+local function refreshAllHitboxes(mode)
+    HitboxTargetPart = mode
+    
+    for _, player in ipairs(Players:GetPlayers()) do 
+        if player ~= LocalPlayer and player.Character then 
+            local humanoid = getHumanoid(player.Character)
+            if humanoid and humanoid.Health > 0 then
+                 applyHitboxModifications(player, mode)
+            end
+        end 
+    end
+    
+    updateToggleButton()
+    
+    local message
+    if mode == "Head" then
+        message = "تم تبديل Hitbox\n-Head-"
+    elseif mode == "Torso" then
+        message = "تم تبديل Hitbox\n-Torso-"
+    end
+    showNotification(message)
+    print("✨ Hitbox Mode Switched To: " .. mode .. " (Keybind: H)")
+end
+
+local function toggleHitboxMode()
+    local currentTime = tick()
+    
+    if currentTime - LastToggleTime < KeybindCooldown then
+        return 
+    end
+    
+    if HitboxTargetPart == "Head" then
+        refreshAllHitboxes("Torso") 
+    else
+        refreshAllHitboxes("Head")
+    end
+    
+    LastToggleTime = currentTime
+end
+
+local toggleButton = nil
+
+local function createToggleButton()
+    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+    
+    if playerGui:FindFirstChild("HitboxToggleGui") then 
+        playerGui:FindFirstChild("HitboxToggleGui"):Destroy() 
+    end
+    
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "HitboxToggleGui"
+    screenGui.Parent = playerGui
+    screenGui.DisplayOrder = 99
+    screenGui.ResetOnSpawn = false
+    
+    toggleButton = Instance.new("TextButton")
+    toggleButton.Size = UDim2.new(0, 80, 0, 30)
+    toggleButton.Position = UDim2.new(0, 10, 0, 100) 
+    toggleButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    toggleButton.BackgroundTransparency = 0.3
+    toggleButton.BorderSizePixel = 1
+    toggleButton.BorderColor3 = Color3.fromRGB(100, 100, 100)
+    toggleButton.Text = ""
+    toggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    toggleButton.Font = Enum.Font.GothamBold
+    toggleButton.TextSize = 12
+    toggleButton.ZIndex = 2
+    toggleButton.Parent = screenGui
+    
+    local buttonShadow = Instance.new("Frame")
+    buttonShadow.Size = UDim2.new(1, 4, 1, 4)
+    buttonShadow.Position = UDim2.new(0, -2, 0, -2)
+    buttonShadow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    buttonShadow.BackgroundTransparency = 0.7
+    buttonShadow.BorderSizePixel = 0
+    buttonShadow.ZIndex = 1
+    buttonShadow.Parent = toggleButton
+    
+    local buttonText = Instance.new("TextLabel")
+    buttonText.Size = UDim2.new(1, 0, 1, 0)
+    buttonText.BackgroundTransparency = 1
+    
+    buttonText.Text = "Hitbox - Head"
+    
+    buttonText.TextColor3 = Color3.fromRGB(255, 100, 100) 
+    buttonText.Font = Enum.Font.GothamBold
+    buttonText.TextSize = 12
+    buttonText.ZIndex = 3
+    buttonText.Parent = toggleButton
+    
+    toggleButton.MouseButton1Click:Connect(function()
+        toggleHitboxMode()
+    end)
+    
+    toggleButton.MouseEnter:Connect(function()
+        toggleButton.BackgroundTransparency = 0.1
+    end)
+    
+    toggleButton.MouseLeave:Connect(function()
+        toggleButton.BackgroundTransparency = 0.3
+    end)
+end
+
+local function updateToggleButton()
+    if toggleButton then
+        local textLabel = toggleButton:FindFirstChildOfClass("TextLabel")
+        if textLabel then
+            
+            if HitboxTargetPart == "Head" then
+                textLabel.Text = "Hitbox - Head"
+                textLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+            else
+                textLabel.Text = "Hitbox - Torso"
+                textLabel.TextColor3 = Color3.fromRGB(100, 100, 255)
+            end
+        end
+    end
+end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessedEvent)
+    if input.KeyCode == Enum.KeyCode.H and not gameProcessedEvent and not UserInputService:GetFocusedTextBox() then
+        toggleHitboxMode()
+    end
+end)
+
+local function setupHitDetection()
+    Workspace.DescendantAdded:Connect(function(obj)
+        if obj:IsA("Part") and obj.Name == "Bullet" then
+            obj.Touched:Connect(function(hit)
+                if hit and hit.Parent and hit.Parent:FindFirstChild("Humanoid") then
+                    local hitboxTag = hit:FindFirstChild("UniversalHitbox")
+                    
+                    if hitboxTag then
+                        local hum = hit.Parent:FindFirstChild("Humanoid")
+                        local player = Players:GetPlayerFromCharacter(hit.Parent)
+                        
+                        if player and player ~= LocalPlayer then
+                            hum:TakeDamage(100)
+                        end
+                    end
+                end
+            end)
+        end
+    end)
+end
+
+local function createESPFolder() 
+    if not ESPFolder or not ESPFolder.Parent then 
+        ESPFolder = Instance.new("Folder")
+        ESPFolder.Name = "MafiaAlJalabUniversalHitbox_V11"
+        ESPFolder.Parent = Camera
+    end 
+end
+
+local function isPlayerVisible(player) 
+    local localChar = LocalPlayer.Character
+    local targetChar = player.Character
+    local localRoot = getRootPart(localChar)
+    local targetRoot = getRootPart(targetChar)
+    if not localRoot or not targetRoot then return false end
+    
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+    raycastParams.FilterDescendantsInstances = {localChar, targetChar}
+    
+    local direction = targetRoot.Position - localRoot.Position
+    local raycastResult = Workspace:Raycast(localRoot.Position, direction, raycastParams)
+    
+    return not raycastResult
+end
+
+local function destroyESPOne(player) 
+    if ESPCache[player] then 
+        for _, obj in pairs(ESPCache[player]) do 
+            if obj and obj.Parent then 
+                obj:Destroy() 
+            end 
+        end
+        ESPCache[player] = nil 
+    end 
+end
+
+local function createBoxESP(player, espColor) 
+    local character = player.Character
+    local rootPart = getRootPart(character)
+    if not rootPart then return nil end
+    
+    local box = Instance.new("BoxHandleAdornment")
+    box.Adornee = rootPart
+    box.AlwaysOnTop = true
+    box.Size = Vector3.new(2.5, 5, 1.5)
+    box.Color3 = espColor
+    box.Transparency = 0.7
+    box.ZIndex = 3
+    box.Parent = ESPFolder
+    
+    local highlight = Instance.new("Highlight")
+    highlight.Adornee = character
+    highlight.FillColor = espColor
+    highlight.FillTransparency = 0.8
+    highlight.OutlineColor = espColor
+    highlight.OutlineTransparency = 0.5
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Parent = ESPFolder
+    
+    local billboard = Instance.new("BillboardGui")
+    billboard.Adornee = rootPart
+    billboard.Size = UDim2.new(0, 150, 0, 20) 
+    billboard.AlwaysOnTop = true
+    billboard.StudsOffset = Vector3.new(0, 3.5, 0) 
+    billboard.Parent = ESPFolder
+    
+    local nameLabel = Instance.new("TextLabel", billboard)
+    nameLabel.Size = UDim2.new(1, 0, 1, 0)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Text = player.Name .. " [HITBOX - " .. HitboxTargetPart:upper() .. "]" 
+    nameLabel.TextColor3 = espColor
+    nameLabel.Font = Enum.Font.GothamBold
+    nameLabel.TextSize = 14
+    nameLabel.TextStrokeTransparency = 0.5
+    
+    return {Box = box, Highlight = highlight, NameTag = billboard, Label = nameLabel}
+end
+
+local function updateESP(espObjects, player) 
+    local isVisible = isPlayerVisible(player)
+    local espColor = isVisible and ESPColorVisible or ESPColorHidden
+    
+    if espObjects.Box and espObjects.Box.Parent then espObjects.Box.Color3 = espColor end
+    if espObjects.Highlight and espObjects.Highlight.Parent then 
+        espObjects.Highlight.FillColor = espColor
+        espObjects.Highlight.OutlineColor = espColor 
+    end
+    
+    if espObjects.Label and espObjects.Label.Parent then
+        espObjects.Label.TextColor3 = espColor
+        
+        local currentModeText = HitboxTargetPart == "Head" and "HEAD" or "TORSO"
+        espObjects.Label.Text = player.Name .. " [HITBOX - " .. currentModeText .. "]" 
+    end
+    
+    local newRoot = getRootPart(player.Character)
+    if newRoot then
+         if espObjects.Box.Adornee ~= newRoot then espObjects.Box.Adornee = newRoot end
+         if espObjects.NameTag.Adornee ~= newRoot then espObjects.NameTag.Adornee = newRoot end
+    end
+end
+
+local function refreshESP() 
+    createESPFolder()
+    
+    local playersToRemove = {}
+    for player, cachedObjects in pairs(ESPCache) do 
+        local humanoid = getHumanoid(player.Character)
+        if not player.Parent or not player:IsA("Player") or not humanoid or humanoid.Health <= 0 then 
+            table.insert(playersToRemove, player)
+        end 
+    end
+    
+    for _, player in ipairs(playersToRemove) do
+        destroyESPOne(player)
+        restorePlayerParts(player) 
+    end
+    
+    for _, player in ipairs(Players:GetPlayers()) do 
+        if player ~= LocalPlayer and player.Character then 
+            local humanoid = getHumanoid(player.Character)
+            
+            if humanoid and humanoid.Health > 0 then 
+                applyHitboxModifications(player, HitboxTargetPart)
+                
+                if not ESPCache[player] then 
+                    local initialColor = ESPColorHidden
+                    local espObjects = createBoxESP(player, initialColor)
+                    if espObjects then 
+                        ESPCache[player] = espObjects 
+                    end
+                else 
+                    updateESP(ESPCache[player], player) 
+                end 
+            else 
+                restorePlayerParts(player)
+            end 
+        end 
+    end 
+end
+
+local lastESPUpdate = 0
+
+local function initialize()
+    setupHitDetection()
+    createToggleButton()
+    
+    RunService.Heartbeat:Connect(function() 
+        if tick() - lastESPUpdate > ESPUPDATEINTERVAL then 
+            refreshESP()
+            lastESPUpdate = tick() 
+        end 
+    end)
+
+    Players.PlayerRemoving:Connect(function(player)
+        destroyESPOne(player)
+        restorePlayerParts(player)
+        
+        if player == LocalPlayer and ESPFolder then 
+            ESPFolder:Destroy() 
+            for otherPlayer, _ in pairs(ModifiedPartsCache) do
+                restorePlayerParts(otherPlayer)
+            end
+        end 
+    end)
+
+    refreshAllHitboxes("Head") 
+
+    print("[MafiaAlJalab Universal Hitbox V11.0 - Final Patch] Activated Successfully!")
+    print("✨ Initial Hitbox Mode: Head (Toggle with H)")
+    print("🖱️ Toggle Button: Created (Click to switch) - Text Fixed")
+    print("📊 ESP System: Active")
+    print("🔫 Hit Detection: Active (Patched for all parts + CanCollide Fixed)")
+end
+
+task.wait(1)
+initialize()
